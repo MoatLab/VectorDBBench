@@ -34,8 +34,7 @@ _shutdown_requested = False
 _shutdown_signal: int | None = None
 
 
-class GracefulShutdown(Exception):
-    pass
+# GracefulShutdown exception removed - we now use flag checking instead of exceptions
 
 
 def _signal_name(sig: int | None) -> str:
@@ -53,7 +52,8 @@ def _request_shutdown(sig, _frame):  # noqa: ANN001
         return
     _shutdown_requested = True
     _shutdown_signal = sig
-    raise GracefulShutdown
+    # Don't raise exception from signal handler - just set flag
+    # The main loop will check _shutdown_requested at safe points
 
 
 class SIGNAL(Enum):
@@ -231,18 +231,17 @@ class BenchMarkRunner:
                     # use the cached load duration if this case didn't drop the existing collection
                     if not drop_old:
                         case_res.metrics.load_duration = cached_load_duration if cached_load_duration else 0.0
-                except GracefulShutdown:
-                    interrupted = True
-                    err_msg = f"Interrupted by signal {_signal_name(_shutdown_signal)}"
-                    case_res.label = ResultLabel.FAILED
-                    break
                 except (LoadTimeoutError, PerformanceTimeoutError) as e:
                     log.warning(f"[{idx+1}/{num_cases}] case {runner.display()} failed to run, reason={e}")
                     case_res.label = ResultLabel.OUTOFRANGE
+                    if getattr(runner, "last_metric", None):
+                        case_res.metrics = runner.last_metric
                 except Exception as e:
                     log.warning(f"[{idx+1}/{num_cases}] case {runner.display()} failed to run, reason={e}")
                     traceback.print_exc()
                     case_res.label = ResultLabel.FAILED
+                    if getattr(runner, "last_metric", None):
+                        case_res.metrics = runner.last_metric
                 finally:
                     c_results.append(case_res)
                     send_conn.send((SIGNAL.WIP, idx))
@@ -256,9 +255,6 @@ class BenchMarkRunner:
                 test_result.display()
                 test_result.flush()
 
-        except GracefulShutdown:
-            interrupted = True
-            err_msg = f"Interrupted by signal {_signal_name(_shutdown_signal)}"
         except Exception as e:
             err_msg = (
                 f"An error occurs when running task={running_task.task_label}, run_id={running_task.run_id}, err={e}"

@@ -241,8 +241,22 @@ class SerialSearchRunner:
 
         return results
 
+    @staticmethod
+    def _compute_stats(
+        latencies: list[float], recalls: list[float], ndcgs: list[float]
+    ) -> tuple[float, float, float, float]:
+        avg_recall = round(np.mean(recalls), 4) if recalls else 0.0
+        avg_ndcg = round(np.mean(ndcgs), 4) if ndcgs else 0.0
+        p99 = round(np.percentile(latencies, 99), 4) if latencies else 0.0
+        p95 = round(np.percentile(latencies, 95), 4) if latencies else 0.0
+        return (avg_recall, avg_ndcg, p99, p95)
+
     def search(self, args: tuple[list, list[list[int]]]) -> tuple[float, float, float, float]:
         log.info(f"{mp.current_process().name:14} start search the entire test_data to get recall and latency")
+
+        # Lazy import to avoid circular dependency
+        from ... import interface
+
         with self.db.init():
             self.db.prepare_filter(self.filters)
             test_data, ground_truth = args
@@ -253,11 +267,26 @@ class SerialSearchRunner:
 
             latencies, recalls, ndcgs = [], [], []
             for idx, emb in enumerate(test_data):
+                # Check for shutdown signal for graceful termination
+                if interface._shutdown_requested:
+                    log.warning(
+                        f"Shutdown requested after {len(latencies)} queries. "
+                        "Returning partial serial stats."
+                    )
+                    if latencies:
+                        return self._compute_stats(latencies, recalls, ndcgs)
+                    raise RuntimeError("Shutdown requested before any queries completed")
+
                 s = time.perf_counter()
                 try:
                     results = self._get_db_search_res(emb)
                 except Exception as e:
-                    log.warning(f"VectorDB search_embedding error: {e}")
+                    log.warning(
+                        f"VectorDB search_embedding error after {len(latencies)} queries: {e}. "
+                        "Returning partial serial stats."
+                    )
+                    if latencies:
+                        return self._compute_stats(latencies, recalls, ndcgs)
                     raise e from None
 
                 latencies.append(time.perf_counter() - s)
@@ -276,12 +305,9 @@ class SerialSearchRunner:
                         f"latest_latency={latencies[-1]}, latest recall={recalls[-1]}"
                     )
 
-        avg_latency = round(np.mean(latencies), 4)
-        avg_recall = round(np.mean(recalls), 4)
-        avg_ndcg = round(np.mean(ndcgs), 4)
         cost = round(np.sum(latencies), 4)
-        p99 = round(np.percentile(latencies, 99), 4)
-        p95 = round(np.percentile(latencies, 95), 4)
+        avg_recall, avg_ndcg, p99, p95 = self._compute_stats(latencies, recalls, ndcgs)
+        avg_latency = round(np.mean(latencies), 4) if latencies else 0.0
         log.info(
             f"{mp.current_process().name:14} search entire test_data: "
             f"cost={cost}s, "

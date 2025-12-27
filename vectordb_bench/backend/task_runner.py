@@ -50,6 +50,7 @@ class CaseRunner(BaseModel):
     search_runner: MultiProcessingSearchRunner | None = None
     final_search_runner: MultiProcessingSearchRunner | None = None
     read_write_runner: ReadWriteRunner | None = None
+    last_metric: Metric | None = None
 
     def __eq__(self, obj: any):
         if isinstance(obj, CaseRunner):
@@ -157,6 +158,7 @@ class CaseRunner(BaseModel):
         """
         assert self.db is not None
         log.info("Start capacity case")
+        self.last_metric = Metric()
         try:
             runner = SerialInsertRunner(
                 self.db,
@@ -171,7 +173,8 @@ class CaseRunner(BaseModel):
             raise e from None
         else:
             log.info(f"Capacity case loading dataset reaches VectorDB's limit: max capacity = {count}")
-            return Metric(max_load_count=count)
+            self.last_metric.max_load_count = count
+            return self.last_metric
 
     def _run_perf_case(self, drop_old: bool = True) -> Metric:
         """run performance cases
@@ -183,6 +186,7 @@ class CaseRunner(BaseModel):
         log.info("Start performance case")
         try:
             m = Metric()
+            self.last_metric = m
             if drop_old:
                 if TaskStage.LOAD in self.config.stages:
                     _, load_dur = self._load_train_data()
@@ -224,6 +228,7 @@ class CaseRunner(BaseModel):
     def _run_streaming_case(self) -> Metric:
         log.info("Start streaming case")
         try:
+            self.last_metric = Metric()
             self._init_read_write_runner()
             m = self.read_write_runner.run_read_write()
         except Exception as e:
@@ -232,6 +237,7 @@ class CaseRunner(BaseModel):
             raise e from None
         else:
             log.info(f"Streaming case got result: {m}")
+            self.last_metric = m
             return m
 
     @utils.time_it

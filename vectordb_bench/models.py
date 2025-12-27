@@ -393,6 +393,8 @@ class TestResult(BaseModel):
             max_qps,
             15,
             15,
+            15,
+            15,
             max_recall,
             14,
             5,
@@ -400,7 +402,7 @@ class TestResult(BaseModel):
 
         DATA_FORMAT = (  # noqa: N806
             f"%-{max_db}s | %-{max_db_labels}s %-{max_case}s %-{len(self.task_label)}s"
-            f" | %-{max_load_dur}s %-{max_qps}s %-15s %-15s %-{max_recall}s %-14s"
+            f" | %-{max_load_dur}s %-{max_qps}s %-15s %-15s %-15s %-15s %-{max_recall}s %-14s"
             f" | %-5s"
         )
 
@@ -411,8 +413,10 @@ class TestResult(BaseModel):
             "label",
             "load_dur",
             "qps",
-            "latency(p99)",
-            "latency(p95)",
+            "latency(p99,ser)ms",
+            "latency(p95,ser)ms",
+            "latency(p99,con)ms",
+            "latency(p95,con)ms",
             "recall",
             "max_load_count",
             "label",
@@ -425,6 +429,11 @@ class TestResult(BaseModel):
         fmt = [SUMMARY_FORMAT, TITLE, SPLIT]
 
         for f in filtered_results:
+            # Convert all latencies from seconds to milliseconds for consistency
+            serial_p99_ms = f.metrics.serial_latency_p99 * 1000.0 if f.metrics.serial_latency_p99 else 0.0
+            serial_p95_ms = f.metrics.serial_latency_p95 * 1000.0 if f.metrics.serial_latency_p95 else 0.0
+            conc_p99 = max(f.metrics.conc_latency_p99_list) * 1000.0 if f.metrics.conc_latency_p99_list else 0.0
+            conc_p95 = max(f.metrics.conc_latency_p95_list) * 1000.0 if f.metrics.conc_latency_p95_list else 0.0
             fmt.append(
                 DATA_FORMAT
                 % (
@@ -434,8 +443,10 @@ class TestResult(BaseModel):
                     self.task_label,
                     f.metrics.load_duration,
                     f.metrics.qps,
-                    f.metrics.serial_latency_p99,
-                    f.metrics.serial_latency_p95,
+                    serial_p99_ms,
+                    serial_p95_ms,
+                    conc_p99,
+                    conc_p95,
                     f.metrics.recall,
                     f.metrics.max_load_count,
                     f.label.value,
