@@ -1,4 +1,5 @@
 import logging
+import signal
 import time
 from collections.abc import Callable
 from concurrent.futures import wait
@@ -35,6 +36,13 @@ try:
     from yaml import CLoader as Loader
 except ImportError:
     from yaml import Loader
+
+
+def _signal_name(sig: int) -> str:
+    try:
+        return signal.Signals(sig).name
+    except ValueError:
+        return str(sig)
 
 
 def click_get_defaults_from_file(ctx, param, value):  # noqa: ANN001, ARG001
@@ -648,10 +656,30 @@ def run(
 
     log.info(f"Task:\n{pformat(task)}\n")
     if not parameters["dry_run"]:
-        benchmark_runner.run([task], task_label)
-        time.sleep(5)
-        if global_result_future:
-            wait([global_result_future])
+        shutdown_requested = {"value": False}
 
-        while benchmark_runner.has_running():
-            time.sleep(1)
+        def handle_shutdown(sig, _frame):  # noqa: ANN001
+            if shutdown_requested["value"]:
+                return
+            shutdown_requested["value"] = True
+            log.warning(f"Received {_signal_name(sig)}. Stopping benchmark...")
+            benchmark_runner.stop_running()
+
+        prev_sigint = signal.getsignal(signal.SIGINT)
+        prev_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGINT, handle_shutdown)
+        signal.signal(signal.SIGTERM, handle_shutdown)
+
+        try:
+            benchmark_runner.run([task], task_label)
+            time.sleep(5)
+            if global_result_future:
+                wait([global_result_future])
+
+            while benchmark_runner.has_running():
+                if shutdown_requested["value"]:
+                    break
+                time.sleep(1)
+        finally:
+            signal.signal(signal.SIGINT, prev_sigint)
+            signal.signal(signal.SIGTERM, prev_sigterm)

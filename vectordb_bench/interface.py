@@ -30,6 +30,30 @@ from .models import (
 log = logging.getLogger(__name__)
 
 global_result_future: concurrent.futures.Future | None = None
+_shutdown_requested = False
+_shutdown_signal: int | None = None
+
+
+class GracefulShutdown(Exception):
+    pass
+
+
+def _signal_name(sig: int | None) -> str:
+    if sig is None:
+        return "unknown"
+    try:
+        return signal.Signals(sig).name
+    except ValueError:
+        return str(sig)
+
+
+def _request_shutdown(sig, _frame):  # noqa: ANN001
+    global _shutdown_requested, _shutdown_signal
+    if _shutdown_requested:
+        return
+    _shutdown_requested = True
+    _shutdown_signal = sig
+    raise GracefulShutdown
 
 
 class SIGNAL(Enum):
@@ -161,13 +185,26 @@ class BenchMarkRunner:
             self.running_task = None
 
     def _async_task_v2(self, running_task: TaskRunner, send_conn: Connection) -> None:
+        interrupted = False
+        err_msg = None
         try:
             if not running_task:
                 return
 
+            global _shutdown_requested, _shutdown_signal
+            _shutdown_requested = False
+            _shutdown_signal = None
+            signal.signal(signal.SIGINT, _request_shutdown)
+            signal.signal(signal.SIGTERM, _request_shutdown)
+
             c_results = []
             latest_runner, cached_load_duration = None, None
             for idx, runner in enumerate(running_task.case_runners):
+                if _shutdown_requested:
+                    interrupted = True
+                    err_msg = f"Interrupted by signal {_signal_name(_shutdown_signal)}"
+                    break
+
                 case_res = CaseResult(
                     metrics=Metric(),
                     task_config=runner.config,
@@ -194,42 +231,49 @@ class BenchMarkRunner:
                     # use the cached load duration if this case didn't drop the existing collection
                     if not drop_old:
                         case_res.metrics.load_duration = cached_load_duration if cached_load_duration else 0.0
+                except GracefulShutdown:
+                    interrupted = True
+                    err_msg = f"Interrupted by signal {_signal_name(_shutdown_signal)}"
+                    case_res.label = ResultLabel.FAILED
+                    break
                 except (LoadTimeoutError, PerformanceTimeoutError) as e:
                     log.warning(f"[{idx+1}/{num_cases}] case {runner.display()} failed to run, reason={e}")
                     case_res.label = ResultLabel.OUTOFRANGE
-                    continue
-
                 except Exception as e:
                     log.warning(f"[{idx+1}/{num_cases}] case {runner.display()} failed to run, reason={e}")
                     traceback.print_exc()
                     case_res.label = ResultLabel.FAILED
-                    continue
-
                 finally:
                     c_results.append(case_res)
                     send_conn.send((SIGNAL.WIP, idx))
 
-            test_result = TestResult(
-                run_id=running_task.run_id,
-                task_label=running_task.task_label,
-                results=c_results,
-            )
-            test_result.display()
-            test_result.flush()
+            if c_results:
+                test_result = TestResult(
+                    run_id=running_task.run_id,
+                    task_label=running_task.task_label,
+                    results=c_results,
+                )
+                test_result.display()
+                test_result.flush()
 
-            send_conn.send((SIGNAL.SUCCESS, None))
-            send_conn.close()
-            log.info(f"Success to finish task: label={running_task.task_label}, run_id={running_task.run_id}")
-
+        except GracefulShutdown:
+            interrupted = True
+            err_msg = f"Interrupted by signal {_signal_name(_shutdown_signal)}"
         except Exception as e:
             err_msg = (
                 f"An error occurs when running task={running_task.task_label}, run_id={running_task.run_id}, err={e}"
             )
             traceback.print_exc()
             log.warning(err_msg)
-            send_conn.send((SIGNAL.ERROR, err_msg))
+        finally:
+            if err_msg:
+                send_conn.send((SIGNAL.ERROR, err_msg))
+            else:
+                send_conn.send((SIGNAL.SUCCESS, None))
+                log.info(f"Success to finish task: label={running_task.task_label}, run_id={running_task.run_id}")
             send_conn.close()
-            return
+            if interrupted:
+                log.warning(err_msg)
 
     def _clear_running_task(self):
         global global_result_future
