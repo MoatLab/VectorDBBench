@@ -662,8 +662,11 @@ def run(
             if shutdown_requested["value"]:
                 return
             shutdown_requested["value"] = True
-            log.warning(f"Received {_signal_name(sig)}. Stopping benchmark...")
-            benchmark_runner.stop_running()
+            log.warning(f"Received {_signal_name(sig)}. Stopping benchmark gracefully...")
+            # Set global shutdown flag to allow graceful shutdown with partial results
+            from .. import interface
+            interface._shutdown_requested = True
+            interface._shutdown_signal = sig
 
         prev_sigint = signal.getsignal(signal.SIGINT)
         prev_sigterm = signal.getsignal(signal.SIGTERM)
@@ -678,6 +681,8 @@ def run(
 
             while benchmark_runner.has_running():
                 if shutdown_requested["value"]:
+                    log.info("Waiting for graceful shutdown...")
+                    time.sleep(5)  # Wait briefly for results to flush
                     break
                 time.sleep(1)
         finally:

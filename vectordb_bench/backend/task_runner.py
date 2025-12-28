@@ -213,7 +213,12 @@ class CaseRunner(BaseModel):
                         m.conc_latency_p95_list,
                         m.conc_latency_avg_list,
                     ) = search_results
-                if TaskStage.SEARCH_SERIAL in self.config.stages:
+
+                # Check for shutdown before starting serial search
+                from .. import interface
+                if interface._shutdown_requested:
+                    log.warning("Shutdown requested after concurrent search. Skipping serial search.")
+                elif TaskStage.SEARCH_SERIAL in self.config.stages:
                     search_results = self._serial_search()
                     m.recall, m.ndcg, m.serial_latency_p99, m.serial_latency_p95 = search_results
 
